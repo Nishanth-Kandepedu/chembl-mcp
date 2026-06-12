@@ -55,6 +55,24 @@ def _get(path: str, params: dict | None = None) -> dict:
 
 
 @mcp.tool()
+def get_database_stats() -> dict:
+    """Get current ChEMBL database-wide counts: total compounds (molecules),
+    total bioactivity records (activities), and total targets.
+    Useful for answering 'how many compounds/activities/targets does
+    ChEMBL have' with live, current figures rather than stale knowledge.
+    """
+    molecules = _get("/molecule.json", {"limit": 1})
+    activities = _get("/activity.json", {"limit": 1})
+    targets = _get("/target.json", {"limit": 1})
+    return {
+        "total_compounds": molecules.get("page_meta", {}).get("total_count"),
+        "total_activities": activities.get("page_meta", {}).get("total_count"),
+        "total_targets": targets.get("page_meta", {}).get("total_count"),
+        "source": "ChEMBL REST API (live)",
+    }
+
+
+@mcp.tool()
 def search_compounds(query: str, limit: int = 10) -> dict:
     """Search ChEMBL for compounds by name or synonym.
 
