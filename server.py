@@ -63,11 +63,15 @@ def get_database_stats(metric: str = "compounds") -> dict:
             - "compounds" (total distinct molecules)
             - "activities" (total bioactivity records)
             - "targets" (total drug targets)
+            - "assays" (total assays)
+            - "documents" (total source documents/papers/patents)
     """
     endpoint_map = {
         "compounds": "/molecule.json",
         "activities": "/activity.json",
         "targets": "/target.json",
+        "assays": "/assay.json",
+        "documents": "/document.json",
     }
     metric = metric.lower().strip()
     if metric not in endpoint_map:
