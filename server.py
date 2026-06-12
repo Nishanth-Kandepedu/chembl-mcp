@@ -55,14 +55,29 @@ def _get(path: str, params: dict | None = None) -> dict:
 
 
 @mcp.tool()
-def get_database_stats() -> dict:
-    """Get the current total compound (molecule) count in ChEMBL.
-    Useful for answering 'how many compounds does ChEMBL have' with a
-    live, current figure rather than stale knowledge.
+def get_database_stats(metric: str = "compounds") -> dict:
+    """Get a live total count from ChEMBL for a given metric.
+
+    Args:
+        metric: Which count to retrieve. One of:
+            - "compounds" (total distinct molecules)
+            - "activities" (total bioactivity records)
+            - "targets" (total drug targets)
     """
-    molecules = _get("/molecule.json", {"limit": 1})
+    endpoint_map = {
+        "compounds": "/molecule.json",
+        "activities": "/activity.json",
+        "targets": "/target.json",
+    }
+    metric = metric.lower().strip()
+    if metric not in endpoint_map:
+        return {
+            "error": f"Unknown metric '{metric}'. Choose one of: {list(endpoint_map.keys())}"
+        }
+    data = _get(endpoint_map[metric], {"limit": 1})
     return {
-        "total_compounds": molecules.get("page_meta", {}).get("total_count"),
+        "metric": metric,
+        "total_count": data.get("page_meta", {}).get("total_count"),
         "source": "ChEMBL REST API (live)",
     }
 
