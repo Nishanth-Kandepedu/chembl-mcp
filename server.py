@@ -1,12 +1,20 @@
 """
-ChEMBL MCP Server
-Exposes 4 tools over ChEMBL's public REST API via streamable HTTP MCP transport.
+ChEMBL + UniProtKB MCP Server
+Exposes tools over ChEMBL's and UniProtKB's public REST APIs via
+streamable HTTP MCP transport.
 
 Tools:
-  - search_compounds      : search ChEMBL compounds by name/synonym
-  - get_compound_bioactivity : bioactivity records for a ChEMBL compound ID
-  - get_target_compounds  : top active compounds for a given target
-  - get_admet_properties  : computed physicochemical/ADMET-relevant properties
+  - get_database_stats       : live ChEMBL counts (compounds/activities/targets/assays/documents)
+  - search_compounds         : search ChEMBL compounds by name/synonym
+  - get_compound_bioactivity  : bioactivity records for a ChEMBL compound ID
+  - get_target_compounds      : top active compounds for a given target
+  - get_admet_properties      : computed physicochemical/ADMET-relevant properties
+  - get_compound_by_smiles    : exact structure lookup via SMILES
+  - get_similar_compounds     : structure similarity search
+  - get_drug_indications      : therapeutic indications for a compound
+  - get_target_info           : target metadata + UniProt cross-references
+  - get_uniprot_entry         : core UniProtKB protein info (name, gene, function)
+  - get_uniprot_features      : UniProtKB sequence features (domains, sites, etc.)
 
 Run:
   python3 server.py
@@ -20,6 +28,7 @@ from mcp.server.fastmcp import FastMCP
 import os
 
 CHEMBL_BASE = "https://www.ebi.ac.uk/chembl/api/data"
+UNIPROT_BASE = "https://rest.uniprot.org/uniprotkb"
 
 # Railway (and most PaaS) inject PORT; default to 8000 for local dev.
 mcp = FastMCP("chembl-mcp", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
@@ -30,11 +39,11 @@ MAX_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 1.0  # multiplied by attempt number
 
 
-def _get(path: str, params: dict | None = None) -> dict:
+def _get(path: str, params: dict | None = None, base: str = CHEMBL_BASE) -> dict:
     last_exc = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = client.get(f"{CHEMBL_BASE}{path}", params=params or {})
+            resp = client.get(f"{base}{path}", params=params or {})
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as exc:
@@ -205,6 +214,160 @@ def get_admet_properties(chembl_id: str) -> dict:
         "qed_weighted": props.get("qed_weighted"),
         "aromatic_rings": props.get("aromatic_rings"),
     }
+
+
+@mcp.tool()
+def get_compound_by_smiles(smiles: str, limit: int = 5) -> dict:
+    """Look up ChEMBL compounds by exact or similar SMILES structure.
+    Uses ChEMBL's similarity search (100% = exact match).
+
+    Args:
+        smiles: SMILES string of the query structure.
+        limit: Max number of results to return (default 5, max 15).
+    """
+    limit = min(max(limit, 1), 15)
+    # similarity/{smiles}/{threshold}
+    data = _get(f"/similarity/{smiles}/100.json", {"limit": limit})
+    results = []
+    for m in data.get("molecules", []):
+        results.append({
+            "chembl_id": m.get("molecule_chembl_id"),
+            "pref_name": m.get("pref_name"),
+            "similarity": m.get("similarity"),
+            "smiles": (m.get("molecule_structures") or {}).get("canonical_smiles"),
+            "max_phase": m.get("max_phase"),
+        })
+    return {"query_smiles": smiles, "count": len(results), "results": results}
+
+
+@mcp.tool()
+def get_similar_compounds(smiles: str, threshold: int = 80, limit: int = 10) -> dict:
+    """Find ChEMBL compounds structurally similar to a given SMILES.
+
+    Args:
+        smiles: SMILES string of the query structure.
+        threshold: Similarity threshold percentage (default 80, range 40-100).
+        limit: Max number of results to return (default 10, max 25).
+    """
+    threshold = min(max(threshold, 40), 100)
+    limit = min(max(limit, 1), 25)
+    data = _get(f"/similarity/{smiles}/{threshold}.json", {"limit": limit})
+    results = []
+    for m in data.get("molecules", []):
+        results.append({
+            "chembl_id": m.get("molecule_chembl_id"),
+            "pref_name": m.get("pref_name"),
+            "similarity": m.get("similarity"),
+            "smiles": (m.get("molecule_structures") or {}).get("canonical_smiles"),
+            "max_phase": m.get("max_phase"),
+        })
+    return {"query_smiles": smiles, "threshold": threshold, "count": len(results), "results": results}
+
+
+@mcp.tool()
+def get_drug_indications(chembl_id: str, limit: int = 20) -> dict:
+    """Get approved/investigational therapeutic indications for a ChEMBL compound.
+
+    Args:
+        chembl_id: ChEMBL molecule ID, e.g. 'CHEMBL941'.
+        limit: Max number of indication records to return (default 20, max 50).
+    """
+    limit = min(max(limit, 1), 50)
+    data = _get("/drug_indication.json", {"molecule_chembl_id": chembl_id, "limit": limit})
+    results = []
+    for ind in data.get("drug_indications", []):
+        results.append({
+            "mesh_heading": ind.get("mesh_heading"),
+            "efo_term": ind.get("efo_term"),
+            "max_phase_for_ind": ind.get("max_phase_for_ind"),
+        })
+    return {"chembl_id": chembl_id, "count": len(results), "indications": results}
+
+
+@mcp.tool()
+def get_target_info(target_chembl_id: str) -> dict:
+    """Get metadata for a ChEMBL target: name, organism, target type, and
+    cross-references (e.g. UniProt accession) where available.
+
+    Args:
+        target_chembl_id: ChEMBL target ID, e.g. 'CHEMBL279' (VEGFR2).
+    """
+    data = _get(f"/target/{target_chembl_id}.json")
+    components = data.get("target_components", []) or []
+    uniprot_accessions = []
+    for comp in components:
+        for xref in comp.get("target_component_xrefs", []) or []:
+            if xref.get("xref_src_db") == "UniProt":
+                uniprot_accessions.append(xref.get("xref_id"))
+    return {
+        "target_chembl_id": target_chembl_id,
+        "pref_name": data.get("pref_name"),
+        "target_type": data.get("target_type"),
+        "organism": data.get("organism"),
+        "species_group_flag": data.get("species_group_flag"),
+        "uniprot_accessions": uniprot_accessions,
+    }
+
+
+@mcp.tool()
+def get_uniprot_entry(accession: str) -> dict:
+    """Get core UniProtKB information for a protein accession: name, gene,
+    organism, sequence length, and function description.
+
+    Args:
+        accession: UniProtKB accession, e.g. 'P42336' (PIK3CA).
+    """
+    data = _get(f"/{accession}.json", base=UNIPROT_BASE)
+    protein_desc = (data.get("proteinDescription") or {}).get("recommendedName") or {}
+    full_name = (protein_desc.get("fullName") or {}).get("value")
+    genes = data.get("genes") or []
+    gene_name = (genes[0].get("geneName", {}).get("value") if genes else None)
+    organism = (data.get("organism") or {}).get("scientificName")
+    sequence = (data.get("sequence") or {})
+    function_text = None
+    for comment in data.get("comments", []) or []:
+        if comment.get("commentType") == "FUNCTION":
+            texts = comment.get("texts") or []
+            if texts:
+                function_text = texts[0].get("value")
+            break
+    return {
+        "accession": accession,
+        "protein_name": full_name,
+        "gene_name": gene_name,
+        "organism": organism,
+        "sequence_length": sequence.get("length"),
+        "function": function_text,
+    }
+
+
+@mcp.tool()
+def get_uniprot_features(accession: str, feature_type: str | None = None, limit: int = 20) -> dict:
+    """Get sequence features (domains, active sites, binding sites, etc.)
+    for a UniProtKB protein entry.
+
+    Args:
+        accession: UniProtKB accession, e.g. 'P42336' (PIK3CA).
+        feature_type: Optional filter, e.g. 'Domain', 'Binding site', 'Active site'.
+        limit: Max number of features to return (default 20, max 50).
+    """
+    limit = min(max(limit, 1), 50)
+    data = _get(f"/{accession}.json", base=UNIPROT_BASE)
+    features = data.get("features", []) or []
+    if feature_type:
+        features = [f for f in features if f.get("type", "").lower() == feature_type.lower()]
+    results = []
+    for f in features[:limit]:
+        loc = f.get("location", {})
+        start = (loc.get("start") or {}).get("value")
+        end = (loc.get("end") or {}).get("value")
+        results.append({
+            "type": f.get("type"),
+            "description": f.get("description"),
+            "start": start,
+            "end": end,
+        })
+    return {"accession": accession, "count": len(results), "features": results}
 
 
 if __name__ == "__main__":
