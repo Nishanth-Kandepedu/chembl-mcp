@@ -24,10 +24,10 @@ CHEMBL_BASE = "https://www.ebi.ac.uk/chembl/api/data"
 # Railway (and most PaaS) inject PORT; default to 8000 for local dev.
 mcp = FastMCP("chembl-mcp", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
 
-client = httpx.Client(timeout=30.0, headers={"Accept": "application/json"})
+client = httpx.Client(timeout=15.0, headers={"Accept": "application/json"})
 
-MAX_RETRIES = 3
-RETRY_BACKOFF_SECONDS = 1.5  # multiplied by attempt number
+MAX_RETRIES = 2
+RETRY_BACKOFF_SECONDS = 1.0  # multiplied by attempt number
 
 
 def _get(path: str, params: dict | None = None) -> dict:
@@ -56,18 +56,13 @@ def _get(path: str, params: dict | None = None) -> dict:
 
 @mcp.tool()
 def get_database_stats() -> dict:
-    """Get current ChEMBL database-wide counts: total compounds (molecules),
-    total bioactivity records (activities), and total targets.
-    Useful for answering 'how many compounds/activities/targets does
-    ChEMBL have' with live, current figures rather than stale knowledge.
+    """Get the current total compound (molecule) count in ChEMBL.
+    Useful for answering 'how many compounds does ChEMBL have' with a
+    live, current figure rather than stale knowledge.
     """
     molecules = _get("/molecule.json", {"limit": 1})
-    activities = _get("/activity.json", {"limit": 1})
-    targets = _get("/target.json", {"limit": 1})
     return {
         "total_compounds": molecules.get("page_meta", {}).get("total_count"),
-        "total_activities": activities.get("page_meta", {}).get("total_count"),
-        "total_targets": targets.get("page_meta", {}).get("total_count"),
         "source": "ChEMBL REST API (live)",
     }
 
