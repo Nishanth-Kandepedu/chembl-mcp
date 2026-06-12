@@ -7,8 +7,9 @@ Tools:
   - get_database_stats       : live ChEMBL counts (compounds/activities/targets/assays/documents)
   - search_compounds         : search ChEMBL compounds by name/synonym
   - get_compound_bioactivity  : bioactivity records for a ChEMBL compound ID
+  - get_compound_mechanism    : mechanism of action + target + action type (e.g. "PI4K inhibitor")
   - get_target_compounds      : top active compounds for a given target
-  - get_admet_properties      : computed physicochemical/ADMET-relevant properties
+  - get_physchem_properties   : calculated physicochemical/drug-likeness properties (NOT experimental ADMET)
   - get_compound_by_smiles    : exact structure lookup via SMILES
   - get_similar_compounds     : structure similarity search
   - get_drug_indications      : therapeutic indications for a compound
@@ -155,6 +156,29 @@ def get_compound_bioactivity(chembl_id: str, limit: int = 20) -> dict:
 
 
 @mcp.tool()
+def get_compound_mechanism(chembl_id: str) -> dict:
+    """Get mechanism of action information for a ChEMBL compound (mainly
+    populated for approved/clinical drugs): target, action type (e.g.
+    INHIBITOR, ANTAGONIST, AGONIST), and mechanism description.
+
+    Args:
+        chembl_id: ChEMBL molecule ID, e.g. 'CHEMBL941'.
+    """
+    data = _get("/mechanism.json", {"molecule_chembl_id": chembl_id})
+    results = []
+    for m in data.get("mechanisms", []):
+        results.append({
+            "target_chembl_id": m.get("target_chembl_id"),
+            "mechanism_of_action": m.get("mechanism_of_action"),
+            "action_type": m.get("action_type"),
+            "mechanism_comment": m.get("mechanism_comment"),
+            "direct_interaction": m.get("direct_interaction"),
+            "disease_efficacy": m.get("disease_efficacy"),
+        })
+    return {"chembl_id": chembl_id, "count": len(results), "mechanisms": results}
+
+
+@mcp.tool()
 def get_target_compounds(target_chembl_id: str, limit: int = 20, max_value_nm: float | None = None) -> dict:
     """Get compounds with bioactivity data against a given ChEMBL target.
 
@@ -189,10 +213,14 @@ def get_target_compounds(target_chembl_id: str, limit: int = 20, max_value_nm: f
 
 
 @mcp.tool()
-def get_admet_properties(chembl_id: str) -> dict:
-    """Get computed physicochemical / drug-likeness (ADMET-relevant) properties
-    for a given ChEMBL compound ID (e.g. molecular weight, LogP, HBD/HBA, PSA,
-    Lipinski rule-of-five violations).
+def get_physchem_properties(chembl_id: str) -> dict:
+    """Get computed physicochemical / drug-likeness properties for a given
+    ChEMBL compound ID (molecular weight, LogP, HBD/HBA, PSA, rotatable
+    bonds, Lipinski rule-of-five violations, QED).
+
+    Note: these are calculated physicochemical descriptors, NOT experimental
+    ADMET (absorption/distribution/metabolism/excretion/toxicity) data.
+    ChEMBL does not provide ADMET predictions via this endpoint.
 
     Args:
         chembl_id: ChEMBL molecule ID, e.g. 'CHEMBL25'.
