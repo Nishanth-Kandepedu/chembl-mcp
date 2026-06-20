@@ -23,6 +23,7 @@ Server listens on 0.0.0.0:8000 with streamable HTTP at /mcp
 """
 
 import time
+import asyncio
 import httpx
 from mcp.server.fastmcp import FastMCP
 
@@ -34,17 +35,17 @@ UNIPROT_BASE = "https://rest.uniprot.org/uniprotkb"
 # Railway (and most PaaS) inject PORT; default to 8000 for local dev.
 mcp = FastMCP("chembl-mcp", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
 
-client = httpx.Client(timeout=15.0, headers={"Accept": "application/json"})
+client = httpx.AsyncClient(timeout=15.0, headers={"Accept": "application/json"})
 
 MAX_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 1.0  # multiplied by attempt number
 
 
-def _get(path: str, params: dict | None = None, base: str = CHEMBL_BASE) -> dict:
+async def _get(path: str, params: dict | None = None, base: str = CHEMBL_BASE) -> dict:
     last_exc = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = client.get(f"{base}{path}", params=params or {})
+            resp = await client.get(f"{base}{path}", params=params or {})
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as exc:
@@ -52,20 +53,20 @@ def _get(path: str, params: dict | None = None, base: str = CHEMBL_BASE) -> dict
             last_exc = exc
             if status == 429 or status >= 500:
                 if attempt < MAX_RETRIES:
-                    time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+                    await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
                     continue
             raise
         except httpx.TransportError as exc:
             last_exc = exc
             if attempt < MAX_RETRIES:
-                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+                await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
                 continue
             raise
     raise last_exc
 
 
 @mcp.tool()
-def get_database_stats(metric: str = "compounds") -> dict:
+async def get_database_stats(metric: str = "compounds") -> dict:
     """Get a live total count from ChEMBL for a given metric.
 
     Args:
@@ -88,7 +89,7 @@ def get_database_stats(metric: str = "compounds") -> dict:
         return {
             "error": f"Unknown metric '{metric}'. Choose one of: {list(endpoint_map.keys())}"
         }
-    data = _get(endpoint_map[metric], {"limit": 1})
+    data = await _get(endpoint_map[metric], {"limit": 1})
     return {
         "metric": metric,
         "total_count": data.get("page_meta", {}).get("total_count"),
@@ -97,7 +98,7 @@ def get_database_stats(metric: str = "compounds") -> dict:
 
 
 @mcp.tool()
-def search_compounds(query: str, limit: int = 10) -> dict:
+async def search_compounds(query: str, limit: int = 10) -> dict:
     """Search ChEMBL for compounds by name or synonym.
 
     Args:
@@ -105,7 +106,7 @@ def search_compounds(query: str, limit: int = 10) -> dict:
         limit: Max number of results to return (default 10, max 25).
     """
     limit = min(max(limit, 1), 25)
-    data = _get(
+    data = await _get(
         "/molecule.json",
         {
             "molecule_synonyms__molecule_synonym__icontains": query,
@@ -125,7 +126,7 @@ def search_compounds(query: str, limit: int = 10) -> dict:
 
 
 @mcp.tool()
-def get_compound_bioactivity(chembl_id: str, limit: int = 20) -> dict:
+async def get_compound_bioactivity(chembl_id: str, limit: int = 20) -> dict:
     """Get bioactivity (assay) records for a given ChEMBL compound ID.
 
     Args:
@@ -133,7 +134,7 @@ def get_compound_bioactivity(chembl_id: str, limit: int = 20) -> dict:
         limit: Max number of activity records to return (default 20, max 50).
     """
     limit = min(max(limit, 1), 50)
-    data = _get(
+    data = await _get(
         "/activity.json",
         {
             "molecule_chembl_id": chembl_id,
@@ -156,7 +157,7 @@ def get_compound_bioactivity(chembl_id: str, limit: int = 20) -> dict:
 
 
 @mcp.tool()
-def get_compound_mechanism(chembl_id: str) -> dict:
+async def get_compound_mechanism(chembl_id: str) -> dict:
     """Get mechanism of action information for a ChEMBL compound (mainly
     populated for approved/clinical drugs): target, action type (e.g.
     INHIBITOR, ANTAGONIST, AGONIST), and mechanism description.
@@ -164,7 +165,7 @@ def get_compound_mechanism(chembl_id: str) -> dict:
     Args:
         chembl_id: ChEMBL molecule ID, e.g. 'CHEMBL941'.
     """
-    data = _get("/mechanism.json", {"molecule_chembl_id": chembl_id})
+    data = await _get("/mechanism.json", {"molecule_chembl_id": chembl_id})
     results = []
     for m in data.get("mechanisms", []):
         results.append({
@@ -179,7 +180,7 @@ def get_compound_mechanism(chembl_id: str) -> dict:
 
 
 @mcp.tool()
-def get_target_compounds(target_chembl_id: str, limit: int = 20, max_value_nm: float | None = None) -> dict:
+async def get_target_compounds(target_chembl_id: str, limit: int = 20, max_value_nm: float | None = None) -> dict:
     """Get compounds with bioactivity data against a given ChEMBL target.
 
     Args:
@@ -198,7 +199,7 @@ def get_target_compounds(target_chembl_id: str, limit: int = 20, max_value_nm: f
         params["standard_value__lte"] = max_value_nm
         params["standard_units"] = "nM"
 
-    data = _get("/activity.json", params)
+    data = await _get("/activity.json", params)
     results = []
     for a in data.get("activities", []):
         results.append({
@@ -213,7 +214,7 @@ def get_target_compounds(target_chembl_id: str, limit: int = 20, max_value_nm: f
 
 
 @mcp.tool()
-def get_physchem_properties(chembl_id: str) -> dict:
+async def get_physchem_properties(chembl_id: str) -> dict:
     """Get computed physicochemical / drug-likeness properties for a given
     ChEMBL compound ID (molecular weight, LogP, HBD/HBA, PSA, rotatable
     bonds, Lipinski rule-of-five violations, QED).
@@ -225,7 +226,7 @@ def get_physchem_properties(chembl_id: str) -> dict:
     Args:
         chembl_id: ChEMBL molecule ID, e.g. 'CHEMBL25'.
     """
-    data = _get(f"/molecule/{chembl_id}.json")
+    data = await _get(f"/molecule/{chembl_id}.json")
     props = data.get("molecule_properties") or {}
     structures = data.get("molecule_structures") or {}
     return {
@@ -245,7 +246,7 @@ def get_physchem_properties(chembl_id: str) -> dict:
 
 
 @mcp.tool()
-def get_compound_by_smiles(smiles: str, limit: int = 5) -> dict:
+async def get_compound_by_smiles(smiles: str, limit: int = 5) -> dict:
     """Look up ChEMBL compounds by exact or similar SMILES structure.
     Uses ChEMBL's similarity search (100% = exact match).
 
@@ -255,7 +256,7 @@ def get_compound_by_smiles(smiles: str, limit: int = 5) -> dict:
     """
     limit = min(max(limit, 1), 15)
     # similarity/{smiles}/{threshold}
-    data = _get(f"/similarity/{smiles}/100.json", {"limit": limit})
+    data = await _get(f"/similarity/{smiles}/100.json", {"limit": limit})
     results = []
     for m in data.get("molecules", []):
         results.append({
@@ -269,7 +270,7 @@ def get_compound_by_smiles(smiles: str, limit: int = 5) -> dict:
 
 
 @mcp.tool()
-def get_similar_compounds(smiles: str, threshold: int = 80, limit: int = 10) -> dict:
+async def get_similar_compounds(smiles: str, threshold: int = 80, limit: int = 10) -> dict:
     """Find ChEMBL compounds structurally similar to a given SMILES.
 
     Args:
@@ -279,7 +280,7 @@ def get_similar_compounds(smiles: str, threshold: int = 80, limit: int = 10) -> 
     """
     threshold = min(max(threshold, 40), 100)
     limit = min(max(limit, 1), 25)
-    data = _get(f"/similarity/{smiles}/{threshold}.json", {"limit": limit})
+    data = await _get(f"/similarity/{smiles}/{threshold}.json", {"limit": limit})
     results = []
     for m in data.get("molecules", []):
         results.append({
@@ -293,7 +294,7 @@ def get_similar_compounds(smiles: str, threshold: int = 80, limit: int = 10) -> 
 
 
 @mcp.tool()
-def get_drug_indications(chembl_id: str, limit: int = 20) -> dict:
+async def get_drug_indications(chembl_id: str, limit: int = 20) -> dict:
     """Get approved/investigational therapeutic indications for a ChEMBL compound.
 
     Args:
@@ -301,7 +302,7 @@ def get_drug_indications(chembl_id: str, limit: int = 20) -> dict:
         limit: Max number of indication records to return (default 20, max 50).
     """
     limit = min(max(limit, 1), 50)
-    data = _get("/drug_indication.json", {"molecule_chembl_id": chembl_id, "limit": limit})
+    data = await _get("/drug_indication.json", {"molecule_chembl_id": chembl_id, "limit": limit})
     results = []
     for ind in data.get("drug_indications", []):
         results.append({
@@ -313,14 +314,14 @@ def get_drug_indications(chembl_id: str, limit: int = 20) -> dict:
 
 
 @mcp.tool()
-def get_target_info(target_chembl_id: str) -> dict:
+async def get_target_info(target_chembl_id: str) -> dict:
     """Get metadata for a ChEMBL target: name, organism, target type, and
     cross-references (e.g. UniProt accession) where available.
 
     Args:
         target_chembl_id: ChEMBL target ID, e.g. 'CHEMBL279' (VEGFR2).
     """
-    data = _get(f"/target/{target_chembl_id}.json")
+    data = await _get(f"/target/{target_chembl_id}.json")
     components = data.get("target_components", []) or []
     uniprot_accessions = []
     for comp in components:
@@ -338,14 +339,14 @@ def get_target_info(target_chembl_id: str) -> dict:
 
 
 @mcp.tool()
-def get_uniprot_entry(accession: str) -> dict:
+async def get_uniprot_entry(accession: str) -> dict:
     """Get core UniProtKB information for a protein accession: name, gene,
     organism, sequence length, and function description.
 
     Args:
         accession: UniProtKB accession, e.g. 'P42336' (PIK3CA).
     """
-    data = _get(f"/{accession}.json", base=UNIPROT_BASE)
+    data = await _get(f"/{accession}.json", base=UNIPROT_BASE)
     protein_desc = (data.get("proteinDescription") or {}).get("recommendedName") or {}
     full_name = (protein_desc.get("fullName") or {}).get("value")
     genes = data.get("genes") or []
@@ -370,7 +371,7 @@ def get_uniprot_entry(accession: str) -> dict:
 
 
 @mcp.tool()
-def get_uniprot_features(accession: str, feature_type: str | None = None, limit: int = 20) -> dict:
+async def get_uniprot_features(accession: str, feature_type: str | None = None, limit: int = 20) -> dict:
     """Get sequence features (domains, active sites, binding sites, etc.)
     for a UniProtKB protein entry.
 
@@ -380,7 +381,7 @@ def get_uniprot_features(accession: str, feature_type: str | None = None, limit:
         limit: Max number of features to return (default 20, max 50).
     """
     limit = min(max(limit, 1), 50)
-    data = _get(f"/{accession}.json", base=UNIPROT_BASE)
+    data = await _get(f"/{accession}.json", base=UNIPROT_BASE)
     features = data.get("features", []) or []
     if feature_type:
         features = [f for f in features if f.get("type", "").lower() == feature_type.lower()]
